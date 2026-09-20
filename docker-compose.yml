@@ -8,6 +8,8 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       LLM_MODE: ${LLM_MODE:-mock}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-qwen/qwen3.8-27b}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-local}
       LLM_MODEL: ${LLM_MODEL:-local-model}

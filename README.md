@@ -217,7 +217,49 @@ in health and every incident. PyTorch and CUDA are not required.
 
 For Docker, `INSTALL_ONNX=1` is the default; set it to `0` for a smaller mock/HOG-only
 image. Rebuild after changing it. Compose reads `.env`
-automatically; manual Python launches use exported environment variables instead.
+automatically. Manual Python launches also load the repository's `.env`; exported
+environment variables take precedence. Restart the server after changing settings.
+
+## Groq Vision: assess the incident image
+
+Create a local `.env` (excluded from Git and Docker build context):
+
+```dotenv
+LLM_MODE=groq
+GROQ_API_KEY=your_key_here
+GROQ_MODEL=qwen/qwen3.8-27b
+```
+
+Get your key from [Groq Console](https://console.groq.com/keys). The model is
+configurable; the default is listed in [Groq Vision documentation](https://console.groq.com/docs/vision).
+Restart Uvicorn (or recreate the Compose service), then start the real demo.
+Each eligible incident sends **one annotated JPEG from that exact event**, plus
+detection metadata, to `https://api.groq.com/openai/v1/chat/completions`.
+The video stream itself is not uploaded. This applies to the selected source,
+including your own camera when you choose one. Use `LLM_MODE=mock` for local-only reports.
+
+The model returns a Russian report and a validated `vision_assessment` containing
+`verdict` (`confirmed`, `not_confirmed`, `uncertain`) and `explanation`. It is asked
+to assess visible people independently of the detector overlays. Its assessment
+is displayed separately from the detector policy; it does not dismiss alerts or
+trigger physical actions. `report_source=vlm` identifies a successful image assessment.
+
+To send exactly one public demo frame and verify the integration:
+
+```bash
+python -m src.check_vlm
+```
+
+This command makes a real API request. Normal `pytest` runs use mocked HTTP and
+never consume credits, even when your local `.env` contains a key.
+
+Groq image requests are limited to one per 20 seconds per process. Other events
+retain their local report with `fallback_reason=rate_limited_locally`. HTTP errors
+pause requests for 60 seconds; timeouts, missing images and malformed JSON also
+fall back without discarding the incident. No automatic HTTP retries are used.
+The dashboard reports configuration and the latest error without exposing the key.
+`report_provider`, `report_model`, `fallback_reason`, and `vision_assessment` are
+included in alert JSON. API usage is charged/limited according to your Groq account.
 
 ## LLM / vLLM and webhooks
 
@@ -233,8 +275,8 @@ LLM_MODEL=your-served-model-name
 
 For OpenAI, use `https://api.openai.com/v1`, your key and a compatible model name.
 For a host vLLM server from Docker Desktop use `http://host.docker.internal:8001/v1`.
-The client sends **detection metadata only**, not video/images. Qwen-VL-style visual
-reasoning is represented by the mock; real VLM image inputs are not implemented.
+This legacy `LLM_MODE=openai` path sends **detection metadata only**, not images.
+Use the separate `LLM_MODE=groq` path above for actual visual assessment.
 Timeouts and invalid responses produce `report_source: mock_fallback`.
 
 Set `ALERT_WEBHOOK_URL` to deliver each generated Alert as JSON. Delivery is
@@ -254,7 +296,9 @@ end-to-end LangGraph alerts, webhook deduplication, restart, file EOF, fallback,
 dashboard JPEGs, incident snapshots and occupancy confirmation. When the real
 assets and ONNX Runtime are installed, an integration test also checks YOLO people
 detections and a LangGraph report from the real video; otherwise it is skipped.
-GPU providers, cameras and external LLMs need separate integration testing.
+Tests also cover Groq image payloads, structured assessment parsing, throttling,
+HTTP errors and secret exclusion. GPU providers and cameras need separate testing;
+use `python -m src.check_vlm` for an explicit live Groq integration check.
 
 Use **one Uvicorn worker**: stream state and the last 200 alerts are process-local
 and disappear on restart. This is an unauthenticated local demo; Compose binds

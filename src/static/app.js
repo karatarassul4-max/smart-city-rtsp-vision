@@ -1,6 +1,7 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const emptyAlerts = $("alerts").firstElementChild.cloneNode(true);
+const fallbackLabels = {missing_api_key:"не указан ключ API", invalid_api_key:"неверный ключ API", access_denied:"нет доступа к модели", model_not_available:"модель недоступна", provider_rate_limit:"лимит Groq", provider_timeout:"Groq не ответил вовремя", provider_unreachable:"нет соединения с провайдером", invalid_provider_response:"некорректный ответ модели", rate_limited_locally:"интервал между VLM-запросами — 20 секунд", missing_incident_image:"нет снимка инцидента"};
 let running = false, busy = false, demoReady = false, lastAlerts = "", frameBusy = false;
 let latestStatus = null;
 const notes = {
@@ -63,7 +64,11 @@ function applyStatus(status) {
   const labels = {recording:"ЗАПИСЬ · РЕАЛЬНЫЕ КАДРЫ", simulation:"СИМУЛЯЦИЯ · ТЕСТОВЫЕ КАДРЫ", live:"КАМЕРА · ПРЯМОЙ ПОТОК"};
   $("videoLabel").textContent = labels[status.source_kind] || "";
   $("videoLabel").hidden = !status.source_kind;
-  $("reportMode").textContent = status.report_mode === "llm" ? "Отчеты через внешний LLM. При ошибке — локальный шаблон; источник указан у события." : "Правила принятия решений + локальный отчет. Внешний LLM не подключен.";
+  if (status.report_mode === "vlm") {
+    $("reportMode").textContent = `Groq Vision · ${status.report_model}. Снимок инцидента передается в Groq, не чаще раза в 20 секунд. ` + (!status.report_key_configured ? "Ключ API не настроен." : status.report_last_error ? "Последняя ошибка: " + (fallbackLabels[status.report_last_error] || status.report_last_error) : "Визуальная оценка + отчет на русском.");
+  } else {
+    $("reportMode").textContent = status.report_mode === "llm" ? "Отчеты через внешний LLM. При ошибке — локальный шаблон; источник указан у события." : "Правила принятия решений + локальный отчет. Внешний LLM не подключен.";
+  }
   if (status.error) message(status.error, true);
   controls();
 }
@@ -87,9 +92,19 @@ function renderAlerts(alerts) {
     node.querySelector("h3").textContent = `Людей в запретной зоне: ${event.detections.length}`;
     node.querySelector(".alert-action").textContent = alert.action === "request_urgent_review" ? "Нужна срочная проверка оператором." : "Проверьте присутствие человека в зоне.";
     const kinds = {simulation:"Симуляция", recording:"Видеозапись", live:"Камера"};
-    const sources = {mock:"Локальный шаблон", mock_fallback:"Шаблон: LLM недоступен", llm:"Отчет LLM"};
+    const sources = {mock:"Локальный шаблон", mock_fallback:"Локальный шаблон", llm:"Отчет LLM", vlm:"Groq · визуальная оценка"};
     node.querySelector(".alert-meta").textContent = `${kinds[event.source_kind] || "Источник неизвестен"} · Кадр ${event.frame_id} · ${event.backend} · ${sources[alert.report_source]}`;
     node.querySelector(".report").textContent = alert.report;
+    if (alert.fallback_reason) {
+      node.querySelector(".alert-meta").textContent += " · " + (fallbackLabels[alert.fallback_reason] || alert.fallback_reason);
+    }
+    if (alert.vision_assessment) {
+      const assessment = document.createElement("p");
+      assessment.className = "vision-assessment";
+      const verdicts = {confirmed:"VLM: присутствие подтверждено", not_confirmed:"VLM: присутствие не подтверждено", uncertain:"VLM: недостаточно уверенности"};
+      assessment.textContent = verdicts[alert.vision_assessment.verdict] + ". " + alert.vision_assessment.explanation;
+      node.querySelector(".alert-action").after(assessment);
+    }
     // Construct a local snapshot URL, never follow arbitrary URLs from received webhooks.
     const link = node.querySelector(".snapshot-link");
     if (event.snapshot_url) {

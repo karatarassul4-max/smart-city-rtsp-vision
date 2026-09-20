@@ -1,3 +1,10 @@
+.vision-assessment {
+  background: #eef5ef;
+  border-left: 3px solid #12695c;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.7;
+}
 :root {
   --bg:#f4f5f0;
   --ink:#172b2b;

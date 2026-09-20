@@ -5,3 +5,4 @@ numpy>=1.26,<3
 opencv-python-headless>=4.10,<5
 langgraph>=0.2.60,<2
 httpx>=0.27,<1
+python-dotenv>=1,<2

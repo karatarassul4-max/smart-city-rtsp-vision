@@ -46,9 +46,18 @@ class Incident(BaseModel):
     snapshot_url: str | None = None
 
 
+class VisionAssessment(BaseModel):
+    verdict: Literal["confirmed", "not_confirmed", "uncertain"]
+    explanation: str = Field(min_length=1, max_length=3000)
+
+
 class Alert(BaseModel):
     incident: Incident
     severity: Literal["warning", "critical"]
     action: Literal["notify_operator", "request_urgent_review"]
     report: str = Field(min_length=1, max_length=8000)
-    report_source: Literal["mock", "llm", "mock_fallback"]
+    report_source: Literal["mock", "llm", "vlm", "mock_fallback"]
+    report_provider: str | None = None
+    report_model: str | None = None
+    fallback_reason: str | None = None
+    vision_assessment: VisionAssessment | None = None

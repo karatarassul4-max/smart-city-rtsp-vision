@@ -22,5 +22,6 @@ terms. See [OpenCV's upstream license](https://github.com/opencv/opencv/blob/4.1
 and sample provenance for the footage. Downloading assets does not relicense them.
 
 No images, footage or detection metadata are sent to an external service in the
-default configuration. Enabling an external LLM sends incident metadata; enabling
-an outgoing webhook sends the alert payload. Snapshots are served locally.
+default configuration. Enabling `LLM_MODE=openai` sends incident metadata;
+`LLM_MODE=groq` sends the event's annotated JPEG and metadata to Groq for visual
+assessment. An outgoing webhook sends the alert payload. Snapshots are also served locally.

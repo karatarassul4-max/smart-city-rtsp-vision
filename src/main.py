@@ -29,7 +29,7 @@ class Pipeline:
         self.reader: StreamReader | None = None
         self.worker: asyncio.Task | None = None
         self.agent_worker: asyncio.Task | None = None
-        self.events: asyncio.Queue[Incident] = asyncio.Queue(maxsize=16)
+        self.events: asyncio.Queue[tuple[Incident, bytes]] = asyncio.Queue(maxsize=16)
         self.alerts: deque[Alert] = deque(maxlen=200)
         self.agent = IncidentAgent()
         self.processed = 0
@@ -104,7 +104,7 @@ class Pipeline:
                 "latency_ms": round(self.latency_ms, 1),
                 "processing_fps": round(self.processed / max(elapsed, 0.001), 1),
                 "frame_age_seconds": round(time.monotonic() - self.last_frame_at, 1) if self.last_frame_at else None,
-                "report_mode": "llm" if os.getenv("LLM_MODE", "mock") == "openai" else "local_template",
+                **self.agent.status(),
                 "error": self.error or (self.reader.error if self.reader else None)}
 
     async def _process(self, config: StartRequest, detector: Detector) -> None:
@@ -144,7 +144,7 @@ class Pipeline:
                                          stream_id=self.stream_id, source_kind=self.source_kind)
                         event.snapshot_url = f"/alerts/{event.id}/snapshot.jpg"
                         try:
-                            self.events.put_nowait(event)
+                            self.events.put_nowait((event, self.latest_jpeg))
                             self.snapshots[event.id] = self.latest_jpeg
                             while len(self.snapshots) > 200:
                                 self.snapshots.pop(next(iter(self.snapshots)))
@@ -160,9 +160,9 @@ class Pipeline:
 
     async def consume_events(self) -> None:
         while True:
-            event = await self.events.get()
+            event, jpeg = await self.events.get()
             try:
-                alert = await self.agent.run(event)
+                alert = await self.agent.run(event, jpeg)
                 self.store(alert)
                 url = os.getenv("ALERT_WEBHOOK_URL")
                 if url:
