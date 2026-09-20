@@ -1,0 +1,23 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        INSTALL_ONNX: ${INSTALL_ONNX:-0}
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      LLM_MODE: ${LLM_MODE:-mock}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-local}
+      LLM_MODEL: ${LLM_MODEL:-local-model}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    volumes:
+      - ./media:/app/media:ro
+      - ./models:/app/models:ro
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
