@@ -4,12 +4,18 @@ import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from pathlib import Path
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from .agent import IncidentAgent
+from .assets import ASSETS, ROOT, demo_status
 from .detector import Detector
+from .preview import annotate
 from .schemas import Alert, Incident, StartRequest
 from .stream_reader import StreamReader
 
@@ -30,6 +36,15 @@ class Pipeline:
         self.dropped_events = 0
         self.error: str | None = None
         self.backend: str | None = None
+        self.latest_jpeg: bytes | None = None
+        self.snapshots: dict[str, bytes] = {}
+        self.stream_id: str | None = None
+        self.source_kind: str | None = None
+        self.started_at = 0.0
+        self.elapsed = 0.0
+        self.people = self.in_zone = 0
+        self.latency_ms = 0.0
+        self.last_frame_at = 0.0
 
     async def start(self, config: StartRequest) -> dict:
         async with self.lock:
@@ -37,11 +52,20 @@ class Pipeline:
                 raise HTTPException(409, "A stream is already active")
             if self.reader and self.reader.thread.is_alive():
                 raise HTTPException(409, "Previous capture is still shutting down")
+            if config.source == "demo":
+                if not demo_status()["ready"]:
+                    raise HTTPException(400, "Real demo assets are missing. Run pip install -r requirements-onnx.txt, then python -m src.assets")
+                config = config.model_copy(update={"source": str(ROOT / ASSETS["video"]["path"]),
+                                                   "model_path": str(ROOT / ASSETS["model"]["path"]),
+                                                   "backend": "onnx", "fps": 10})
+            elif (config.source != "synthetic" and config.backend == "auto" and config.model_path is None
+                  and (ROOT / ASSETS["model"]["path"]).is_file()):
+                config = config.model_copy(update={"model_path": str(ROOT / ASSETS["model"]["path"])})
             self.reader = StreamReader(config.source, config.fps, config.loop,
                                        config.batch_size, config.gstreamer)
             try:
                 detector = await asyncio.to_thread(Detector, config.backend, config.model_path,
-                                                   config.source == "synthetic")
+                                                   config.source == "synthetic", config.confidence)
                 await asyncio.to_thread(self.reader.start)
             except Exception as exc:
                 await asyncio.to_thread(self.reader.stop)
@@ -49,6 +73,13 @@ class Pipeline:
             self.processed = self.dropped_events = 0
             self.error = None
             self.backend = detector.backend
+            self.latest_jpeg = None
+            self.stream_id = str(uuid4())
+            self.source_kind = ("simulation" if config.source == "synthetic" else
+                                "recording" if isinstance(config.source, str) and Path(config.source).is_file() else "live")
+            self.started_at = time.monotonic()
+            self.elapsed = self.latency_ms = self.last_frame_at = 0.0
+            self.people = self.in_zone = 0
             self.worker = asyncio.create_task(self._process(config, detector))
             return self.status()
 
@@ -61,16 +92,25 @@ class Pipeline:
             return self.status()
 
     def status(self) -> dict:
+        running = bool(self.worker and not self.worker.done())
+        elapsed = time.monotonic() - self.started_at if running else self.elapsed
         return {"running": bool(self.worker and not self.worker.done()),
                 "capture_alive": bool(self.reader and self.reader.thread.is_alive()),
                 "backend": self.backend, "processed_frames": self.processed,
                 "dropped_frames": self.reader.dropped if self.reader else 0,
                 "pending_events": self.events.qsize(), "dropped_events": self.dropped_events,
+                "stream_id": self.stream_id, "source_kind": self.source_kind,
+                "people": self.people, "in_zone": self.in_zone,
+                "latency_ms": round(self.latency_ms, 1),
+                "processing_fps": round(self.processed / max(elapsed, 0.001), 1),
+                "frame_age_seconds": round(time.monotonic() - self.last_frame_at, 1) if self.last_frame_at else None,
+                "report_mode": "llm" if os.getenv("LLM_MODE", "mock") == "openai" else "local_template",
                 "error": self.error or (self.reader.error if self.reader else None)}
 
     async def _process(self, config: StartRequest, detector: Detector) -> None:
         reader = self.reader
         last_event = float("-inf")
+        zone_since: float | None = None
         try:
             while not reader.stop_event.is_set():
                 frames = reader.get_batch(config.batch_size)
@@ -87,14 +127,27 @@ class Pipeline:
                     intrusions = [d for d in found if d.label == "person" and
                                   x1 <= (d.box[0]+d.box[2])/2 <= x2 and y1 <= d.box[3] <= y2]
                     latency = (time.monotonic() - frame.captured_at) * 1000
+                    self.latest_jpeg = await asyncio.to_thread(annotate, frame.image, found, config.zone,
+                                                               detector.backend == "mock")
+                    self.people, self.in_zone = len(found), len(intrusions)
+                    self.latency_ms = latency
+                    self.last_frame_at = time.monotonic()
+                    now = time.monotonic()
+                    zone_since = (zone_since if zone_since is not None else now) if intrusions else None
                     if self.processed == 1 or self.processed % 30 == 0:
                         logger.info("FRAME %s objects=%s zone=%s latency=%.1fms dropped=%s",
                                     frame.id, len(found), len(intrusions), latency, reader.dropped)
-                    if intrusions and time.monotonic() - last_event >= config.cooldown_seconds:
+                    if (zone_since is not None and now - zone_since >= config.dwell_seconds
+                            and now - last_event >= config.cooldown_seconds):
                         event = Incident(frame_id=frame.id, detections=intrusions,
-                                         backend=detector.backend, capture_latency_ms=latency)
+                                         backend=detector.backend, capture_latency_ms=latency,
+                                         stream_id=self.stream_id, source_kind=self.source_kind)
+                        event.snapshot_url = f"/alerts/{event.id}/snapshot.jpg"
                         try:
                             self.events.put_nowait(event)
+                            self.snapshots[event.id] = self.latest_jpeg
+                            while len(self.snapshots) > 200:
+                                self.snapshots.pop(next(iter(self.snapshots)))
                             last_event = time.monotonic()
                         except asyncio.QueueFull:
                             self.dropped_events += 1
@@ -102,6 +155,7 @@ class Pipeline:
             self.error = f"Processing failed: {type(exc).__name__}"
             logger.exception("Pipeline failed")
         finally:
+            self.elapsed = time.monotonic() - self.started_at
             await asyncio.to_thread(reader.stop)
 
     async def consume_events(self) -> None:
@@ -149,6 +203,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Smart City RTSP Vision & Agentic Pipeline", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=ROOT / "src" / "static"), name="static")
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard() -> FileResponse:
+    return FileResponse(ROOT / "src" / "static" / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/demo-status")
+async def demo_assets_status() -> dict:
+    return demo_status()
+
+
+@app.get("/frame.jpg", include_in_schema=False)
+async def latest_frame() -> Response:
+    frame = app.state.pipeline.latest_jpeg
+    if frame is None:
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+    return Response(frame, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/alerts/{incident_id}/snapshot.jpg", include_in_schema=False)
+async def alert_snapshot(incident_id: str) -> Response:
+    frame = app.state.pipeline.snapshots.get(incident_id)
+    if frame is None:
+        raise HTTPException(404, "Snapshot expired or not available")
+    return Response(frame, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/health")

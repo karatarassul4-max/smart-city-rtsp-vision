@@ -12,8 +12,9 @@ logger = logging.getLogger(__name__)
 
 class Detector:
     def __init__(self, backend: str = "auto", model_path: str | None = None,
-                 synthetic: bool = False) -> None:
+                 synthetic: bool = False, confidence: float = 0.4) -> None:
         self.session = None
+        self.confidence = confidence
         self.backend = "mock" if synthetic or backend == "mock" else "opencv_hog"
         if backend in ("auto", "onnx", "tensorrt") and model_path:
             try:
@@ -25,10 +26,12 @@ class Detector:
                 preferred = (["TensorrtExecutionProvider", "CUDAExecutionProvider"]
                              if backend == "tensorrt" else [])
                 providers = [p for p in preferred if p in available] + ["CPUExecutionProvider"]
+                options = ort.SessionOptions()
+                options.intra_op_num_threads = 2
                 try:
-                    self.session = ort.InferenceSession(model_path, providers=providers)
+                    self.session = ort.InferenceSession(model_path, sess_options=options, providers=providers)
                 except Exception:
-                    self.session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+                    self.session = ort.InferenceSession(model_path, sess_options=options, providers=["CPUExecutionProvider"])
                 self.input = self.session.get_inputs()[0]
                 shape = self.input.shape
                 if len(shape) != 4 or shape[1] != 3 or self.input.type != "tensor(float)":
@@ -75,7 +78,7 @@ class Detector:
             boxes = [(x * sx, y * sy, bw * sx, bh * sy) for x, y, bw, bh in found]
             scores = [float(1 / (1 + np.exp(-float(v)))) for v in weights]
         return [Detection(label="person", confidence=s, box=(x/w, y/h, (x+bw)/w, (y+bh)/h))
-                for (x, y, bw, bh), s in zip(boxes, scores)]
+                for (x, y, bw, bh), s in zip(boxes, scores) if s >= self.confidence]
 
     def _onnx(self, images: list[np.ndarray]) -> list[list[Detection]]:
         results: list[list[Detection]] = []
@@ -101,12 +104,12 @@ class Detector:
             for rows, (w, h, scale, px, py) in zip(output, transforms):
                 rows = rows.T
                 # COCO class 0 is person; discard other winning classes.
-                rows = rows[(np.argmax(rows[:, 4:], axis=1) == 0) & (rows[:, 4] >= 0.45)]
+                rows = rows[(np.argmax(rows[:, 4:], axis=1) == 0) & (rows[:, 4] >= self.confidence)]
                 boxes, scores = [], []
                 for cx, cy, bw, bh, score, *_ in rows:
                     boxes.append([float(cx-bw/2), float(cy-bh/2), float(bw), float(bh)])
                     scores.append(float(score))
-                keep = cv2.dnn.NMSBoxes(boxes, scores, 0.45, 0.45)
+                keep = cv2.dnn.NMSBoxes(boxes, scores, self.confidence, 0.45)
                 detected = []
                 for i in np.asarray(keep).reshape(-1):
                     x, y, bw, bh = boxes[int(i)]

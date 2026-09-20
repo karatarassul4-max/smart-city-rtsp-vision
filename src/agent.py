@@ -42,7 +42,7 @@ class IncidentAgent:
     async def report(state: AgentState) -> dict:
         incident = state["incident"]
         report = (f"Restricted-zone incident: {len(incident.detections)} person detection(s) "
-                  f"on frame {incident.frame_id}. Backend={incident.backend}. "
+                  f"on frame {incident.frame_id}. Source={incident.source_kind}. Backend={incident.backend}. "
                   f"Action: {state['action']}. Operator verification required.")
         source = "mock"
         if os.getenv("LLM_MODE", "mock") == "openai":

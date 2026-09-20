@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>City Vision · Центр наблюдения</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+<header><a class="brand" href="/"><span class="brand-icon">◈</span> CITY VISION <span class="edition">LOCAL LAB</span></a><nav><span id="connection">Подключение…</span><a href="/docs" target="_blank" rel="noopener">API ↗</a></nav></header>
+<main>
+  <section class="intro"><div><p class="eyebrow">ВИДЕОАНАЛИТИКА / ОБНАРУЖЕНИЕ ЛЮДЕЙ</p><h1>Город в поле зрения.</h1><p class="subtitle">Реальные кадры. Видимые события. Решение — за оператором.</p></div><div class="date" id="date"></div></section>
+  <section class="metrics" aria-label="Показатели обработки">
+    <article><span>Людей в кадре</span><strong id="people">—</strong><small>Обнаружено детектором</small></article>
+    <article><span>В запретной зоне</span><strong id="inZone">—</strong><small>По нижней точке рамки</small></article>
+    <article><span>Скорость обработки</span><strong><b id="fps">—</b><em> FPS</em></strong><small>Средняя за текущий сеанс</small></article>
+    <article><span>Задержка обработки</span><strong><b id="latency">—</b><em> мс</em></strong><small>Буфер + детекция, без сети и LLM</small></article>
+  </section>
+  <div class="workspace">
+    <section class="monitor panel">
+      <div class="panel-heading"><div><span class="dot" id="statusDot"></span><h2 id="streamTitle">Видеопоток</h2></div><span class="pill" id="streamState">Остановлен</span></div>
+      <div class="viewport"><img id="video" alt="Кадр с рамками обнаруженных людей и запретной зоной" hidden><div id="placeholder"><span class="view-icon">⌗</span><h3>Посмотрите, как работает детекция</h3><p>Выберите открытое видео с пешеходами<br>и нажмите «Запустить» ниже.</p></div><div class="video-label" id="videoLabel" hidden>ЗАПИСЬ · РЕАЛЬНЫЕ КАДРЫ</div><div class="stale-label" id="stale" hidden>Поток остановлен · последний кадр</div></div>
+      <div class="legend"><span><i class="green"></i>Человек</span><span><i class="red"></i>Человек в зоне</span><span><i class="amber"></i>Запретная зона</span></div>
+      <form id="controls">
+        <div class="source-row"><label>Источник<select id="source"><option value="demo">Открытое видео · пешеходы</option><option value="webcam">Веб-камера этого компьютера</option><option value="custom">Мой видеофайл / RTSP</option><option value="synthetic">Синтетическая симуляция</option></select></label><button type="submit" id="start">▶ Запустить</button><button type="button" id="stop" class="secondary" disabled>■ Стоп</button></div>
+        <label id="customLabel" hidden>Путь к файлу на сервере или RTSP-адрес<input id="customSource" placeholder="D:\Videos\street.mp4 или rtsp://…" autocomplete="off"></label>
+        <p class="source-note" id="sourceNote">Запись OpenCV с настоящими пешеходами. Детектор YOLOv8n работает локально на CPU.</p>
+        <details><summary>Параметры обнаружения</summary><div class="settings"><label>Порог уверенности<input id="confidence" type="number" min="0.1" max="0.95" step="0.05" value="0.4"></label><label>Подтверждение зоны, с<input id="dwell" type="number" min="0" max="30" step="0.1" value="0.5"></label><label>Интервал алертов, с<input id="cooldown" type="number" min="0" max="3600" value="5"></label></div><p class="setting-help">Границы зоны — доли ширины и высоты от 0 до 1. Изменения применяются при следующем запуске.</p><div class="settings zone"><label>Слева<input id="left" type="number" min="0" max="1" step="0.05" value="0.35"></label><label>Сверху<input id="top" type="number" min="0" max="1" step="0.05" value="0.1"></label><label>Справа<input id="right" type="number" min="0" max="1" step="0.05" value="0.8"></label><label>Снизу<input id="bottom" type="number" min="0" max="1" step="0.05" value="0.95"></label></div></details>
+      </form>
+      <div id="message" role="status" hidden></div>
+      <div class="engine"><span>Детектор <b id="backend">ожидает запуска</b></span><span>Пропущено кадров <b id="dropped">0</b></span></div>
+    </section>
+    <aside class="panel incidents"><div class="panel-heading"><div><h2>Инциденты</h2><span class="count" id="alertCount">0</span></div><span class="live-caption">АВТООБНОВЛЕНИЕ</span></div><div class="agent-note"><span>◇</span><div><b>LangGraph · агент инцидентов</b><p id="reportMode">Правила принятия решений + локальный отчет. Внешний LLM не подключен.</p></div></div><div id="alerts"><div class="empty"><span>✓</span><h3>Пока нет инцидентов</h3><p>Когда человек окажется в зоне,<br>здесь появятся снимок и отчет.</p></div></div><div class="retention">Последние 200 событий в памяти сервера.<br>Отчеты требуют проверки оператором.</div></aside>
+  </div>
+  <footer><span>SMART CITY RTSP VISION & AGENTIC PIPELINE</span><span>Локальная демонстрация · без распознавания личности</span></footer>
+</main>
+<template id="alertTemplate"><article class="alert"><div class="alert-top"><span class="severity"></span><time></time></div><h3></h3><a class="snapshot-link" target="_blank" rel="noopener"><img class="snapshot" alt="Кадр в момент инцидента" loading="lazy"></a><p class="alert-action"></p><div class="alert-meta"></div><details><summary>Отчет агента</summary><p class="report"></p></details></article></template>
+</body>
+</html>
