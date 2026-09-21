@@ -8,6 +8,7 @@ import numpy as np
 from .schemas import Detection
 
 logger = logging.getLogger(__name__)
+CLASSES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
 
 class Detector:
@@ -103,18 +104,26 @@ class Detector:
                 raise ValueError("Only raw COCO YOLOv8/11 [B,84,N] exports without NMS are supported")
             for rows, (w, h, scale, px, py) in zip(output, transforms):
                 rows = rows.T
-                # COCO class 0 is person; discard other winning classes.
-                rows = rows[(np.argmax(rows[:, 4:], axis=1) == 0) & (rows[:, 4] >= self.confidence)]
+                winners = np.argmax(rows[:, 4:], axis=1)
+                confidences = np.max(rows[:, 4:], axis=1)
+                valid = np.isin(winners, list(CLASSES)) & (confidences >= self.confidence)
+                rows, winners, confidences = rows[valid], winners[valid], confidences[valid]
                 boxes, scores = [], []
-                for cx, cy, bw, bh, score, *_ in rows:
+                for row, score in zip(rows, confidences):
+                    cx, cy, bw, bh = row[:4]
                     boxes.append([float(cx-bw/2), float(cy-bh/2), float(bw), float(bh)])
                     scores.append(float(score))
-                keep = cv2.dnn.NMSBoxes(boxes, scores, self.confidence, 0.45)
+                # Suppress overlapping boxes only within the same class.
+                keep = []
+                for cls in np.unique(winners):
+                    indices = np.flatnonzero(winners == cls)
+                    selected = cv2.dnn.NMSBoxes([boxes[i] for i in indices], [scores[i] for i in indices], self.confidence, 0.45)
+                    keep.extend(int(indices[i]) for i in np.asarray(selected).reshape(-1))
                 detected = []
                 for i in np.asarray(keep).reshape(-1):
                     x, y, bw, bh = boxes[int(i)]
                     box = np.clip([(x-px)/scale/w, (y-py)/scale/h,
                                    (x+bw-px)/scale/w, (y+bh-py)/scale/h], 0, 1)
-                    detected.append(Detection(label="person", confidence=scores[int(i)], box=tuple(box)))
+                    detected.append(Detection(label=CLASSES[int(winners[int(i)])], confidence=scores[int(i)], box=tuple(box)))
                 results.append(detected)
         return results

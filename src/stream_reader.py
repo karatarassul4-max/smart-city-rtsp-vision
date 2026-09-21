@@ -17,6 +17,8 @@ class Frame:
     id: int
     captured_at: float
     image: np.ndarray
+    media_time: float | None = None
+    segment: int = 0
 
 
 class StreamReader:
@@ -86,6 +88,11 @@ class StreamReader:
                 capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             self.ready.set()
             index = 0
+            segment = 0
+            source_index = 0
+            source_fps = capture.get(cv2.CAP_PROP_FPS) if is_file else self.fps
+            if not source_fps or source_fps <= 0:
+                source_fps = self.fps
             while not self.stop_event.is_set():
                 started = time.monotonic()
                 if synthetic:
@@ -94,12 +101,15 @@ class StreamReader:
                     ok, image = capture.read()
                     if not ok and is_file and self.loop:
                         capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        segment += 1
+                        source_index = 0
                         ok, image = capture.read()
                     if not ok:
                         if not is_file:
                             self.error = "Live capture disconnected or read timed out"
                         break
-                frame = Frame(index, time.monotonic(), image)
+                frame = Frame(index, time.monotonic(), image,
+                              source_index / source_fps if is_file or synthetic else None, segment)
                 if self.frames.full():
                     try:
                         self.frames.get_nowait()
@@ -108,6 +118,7 @@ class StreamReader:
                         pass
                 self.frames.put_nowait(frame)
                 index += 1
+                source_index += 1
                 # Drain live streams immediately; pace files/synthetic streams for a demo.
                 if synthetic or is_file:
                     self.stop_event.wait(max(0, 1 / self.fps - (time.monotonic() - started)))

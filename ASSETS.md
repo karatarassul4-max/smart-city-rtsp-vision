@@ -25,3 +25,28 @@ No images, footage or detection metadata are sent to an external service in the
 default configuration. Enabling `LLM_MODE=openai` sends incident metadata;
 `LLM_MODE=groq` sends the event's annotated JPEG and metadata to Groq for visual
 assessment. An outgoing webhook sends the alert payload. Snapshots are also served locally.
+
+## Temporal scenario recordings
+
+`python -m src.assets --scenarios` also downloads the following checksum-verified
+files. Sources are public recordings, not connected city cameras.
+
+| Local file | Upstream source | SHA-256 |
+| --- | --- | --- |
+| `media/traffic.mp4` | [Roboflow Supervision examples](https://supervision.roboflow.com/0.24.0/assets/), `vehicles.mp4` | `ac81100d9310bd4e9c02bc0b13b6492781d009742ced347766b2601be3c44ad4` |
+| `media/interaction.mp4` | AIRTLab `violent/cam1/1.mp4` (slap) | `4c94625d8b6c4a6b75e67fa1a1a605f88e452e2688bf0883dac7973d77a0c6a8` |
+| `media/fight.mp4` | AIRTLab `violent/cam1/8.mp4` (fight) | `fb20b0514fb3579776da00b027f057453756e971a182466268a489800a3321b3` |
+| `media/nonviolent.mp4` | AIRTLab `non-violent/cam1/1.mp4` | `3a4506ecff9513682c7e03d42982d57ccda7f85d51519790ca6835acfe681525` |
+
+[AIRTLab dataset](https://github.com/airtlab/A-Dataset-for-Automatic-Violence-Detection-in-Videos)
+files are pinned at `1f7747e104301ccaa82ef5a2f6804b51ced1c398`.
+These are **staged indoor actions by actors**, not recorded street crimes.
+The dataset is published for research/education; follow upstream terms and cite
+Bianculli et al., 2020, [Data in Brief](https://doi.org/10.1016/j.dib.2020.106587).
+The upstream clip labels are evaluation labels, not detector predictions.
+
+`media/traffic-reversed.mp4` is generated locally from the first 200 traffic frames,
+resized to 960x540 and played backwards at 25 FPS. It tests a configured direction
+rule; it is not evidence of a real traffic offense. No third-party videos are
+committed or relicensed here. No weights are updated by downloading these files.
+Groq temporal assessment sends up to three event frames in one contact sheet.

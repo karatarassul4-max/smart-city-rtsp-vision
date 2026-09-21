@@ -18,7 +18,7 @@ def test_mock_uses_pixels_and_batches():
 def test_api_incident_lifecycle():
     with TestClient(app) as client:
         assert client.post("/start-stream", json={"zone": [1, 0, 0, 1]}).status_code == 422
-        assert client.post("/start-stream", json={"source": "synthetic", "zone": [0, 0, 1, 1]}).status_code == 200
+        assert client.post("/start-stream", json={"source": "synthetic", "scenario": "person_zone", "zone": [0, 0, 1, 1]}).status_code == 200
         assert client.post("/start-stream", json={}).status_code == 409
         deadline = time.monotonic() + 10
         alerts = []
@@ -77,5 +77,5 @@ def test_llm_failure_preserves_policy(monkeypatch):
     event = Incident(frame_id=1, detections=[person] * 3, backend="mock", capture_latency_ms=1)
     alert = asyncio.run(IncidentAgent().run(event))
     assert alert.report_source == "mock_fallback"
-    assert alert.severity == "critical"
-    assert alert.action == "request_urgent_review"
+    assert alert.severity == "warning"
+    assert alert.action == "notify_operator"

@@ -1,228 +1,146 @@
 # Smart City RTSP Vision & Agentic Pipeline
 
-A Python 3.10+ demonstration of a low-latency video analytics service: capture frames,
-detect people in a restricted zone, triage incidents with LangGraph, and produce
-operator reports through a mock or an OpenAI-compatible LLM endpoint.
+Python 3.10+ local video analytics demo with OpenCV, YOLO ONNX, FastAPI,
+LangGraph and optional Groq visual assessment. Open `/` for the operator dashboard;
+`/docs` is the Swagger developer interface.
 
-The default demo needs no GPU, model download, API key, camera, or external service.
-It generates a moving green rectangle and detects its pixels as a **simulated person**.
-Real video uses OpenCV's bundled CPU HOG person detector or an optional YOLO ONNX model.
-Mock detections and reports are explicitly identified in the API.
-
-## Visual dashboard with real pedestrians (recommended)
-
-The home page now provides a Russian-language operator dashboard: annotated video,
-people/zone counters, measured processing FPS and latency, start/stop controls,
-confidence/zone settings, and an automatically updated incident feed with snapshots.
-Swagger at `/docs` remains available for developers; **use `/` for the visual demo**.
-
-From the repository directory:
+## Run locally
 
 ```bash
 python -m venv .venv
-# Activate: source .venv/bin/activate (Linux/macOS)
-# Activate: .\.venv\Scripts\Activate.ps1 (Windows PowerShell)
+# Linux/macOS: source .venv/bin/activate
+# PowerShell: .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-onnx.txt
-python -m src.assets
+python -m src.assets --scenarios
 python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-Open [City Vision dashboard](http://localhost:8000/), keep **Открытое видео · пешеходы**
-selected, and click **Запустить**. Within a few seconds the page shows people
-detected by YOLOv8n on recorded OpenCV footage. The video is a real recording,
-**not a live camera**. The restricted zone is defined for demonstration purposes.
-The `python -m src.assets` command downloads about 21 MB from pinned upstream
-versions and verifies SHA-256; see [asset provenance](ASSETS.md).
+Open http://localhost:8000/ and click **Запустить**. The default dashboard source
+is a recorded highway video. Stop before switching sources. Settings take effect
+on the next start. Downloaded assets stay outside Git and have verified SHA-256
+checksums; see [ASSETS.md](ASSETS.md). No camera or GPU is required.
 
-With the prepared assets, `{"source":"demo"}` also works in `POST /start-stream`.
-It selects the included video preset, YOLO ONNX model and 10 FPS playback.
-`python -m src.demo --source demo --seconds 15` runs the same real pipeline in the
-console. For a custom file or camera, `backend: auto` automatically selects the
-downloaded model when available, with a visible CPU HOG fallback on errors.
+For a dependency-light synthetic demo:
 
-The orange rectangle is the zone; a red person box means the person's bottom
-center is inside it. Zone occupancy must persist for `dwell_seconds` (default 0.5)
-before generating an event. This confirms zone occupancy, not the identity or
-dwell time of a tracked individual. Changes to settings apply on the next start.
-The confidence threshold defaults to 0.4. The model can miss people or produce
-false positives; the UI asks an operator to review incidents.
+```bash
+python -m pip install -r requirements.txt
+python -m src.demo --seconds 10 --scenario person_zone
+```
 
-LangGraph triage is real, while report generation stays a **local template** unless
-you configure an LLM. The dashboard labels the report source, video type and actual
-detector backend. Snapshots and alerts are bounded to 200 entries each, in memory;
-they are lost when the server restarts. Received webhook alerts may have no snapshot.
+This explicitly enables a simulated restricted-zone event. Without a scenario,
+custom and synthetic sources default to observation and produce no alerts.
 
-If an old server is already running, stop it with `Ctrl+C` in its terminal and run
-the Uvicorn command again. Reload the home page; `/docs` will still show Swagger.
+## Scenarios and interpretation
+
+| Source preset | Behavior |
+| --- | --- |
+| `traffic` | Real highway recording; vehicle tracking and configured direction/zone rules |
+| `traffic-reversed` | First eight seconds reversed: a visibly labelled controlled direction test |
+| `demo` | Recorded pedestrians; observation only, no alerts from headcount |
+| `fight` | AIRTLab staged indoor fight; experimental interaction review |
+| `interaction` | AIRTLab short staged slap; can be missed by temporal filtering |
+| `nonviolent` | AIRTLab nonviolent interaction, used as a negative control |
+
+Traffic detection retains cars, buses, trucks and motorcycles. A candidate requires
+an established track moving opposite the configured direction for at least one second,
+or an observed transition from outside to inside the exclusion zone followed by dwell.
+An object first detected inside the zone does not establish a vehicle entry.
+The **blue** rectangle and arrow describe permitted direction for one side of the
+road; the **orange** rectangle is an operator-defined exclusion area. These are demo
+assumptions, not inferred traffic laws. Calibrate both rectangles for each new camera.
+There is no red-light or speed-limit enforcement.
+
+Interaction review uses proximity and motion over multiple frames to select candidates.
+It is **not a trained fight classifier**. Hugs and gestures can trigger the selector;
+brief violence can be missed. Groq reviews up to three timestamped frames, but can
+also miss or misinterpret an incident. An unconfirmed interaction remains informational
+with action `none`; visual confirmation requests operator review at `warning` level.
+No generated scenario automatically requests urgent review. Crowds alone never escalate.
+Explicit `person_zone` is available only when the operator intentionally defines a
+restricted pedestrian zone. A VLM `not_confirmed` verdict reduces any candidate to info.
+
+These videos are reproducible evaluation data. **No model weights have been trained
+or fine-tuned**, and no live city camera has been connected. See [EVALUATION.md](EVALUATION.md)
+for measured results, including failures.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Synthetic / file / webcam / RTSP] --> B[OpenCV capture thread]
+    A[File / webcam / RTSP / synthetic] --> B[OpenCV capture thread]
     B --> C[Bounded frame buffer: drop oldest]
-    C --> D[Batch detector: ONNX or CPU fallback]
-    D --> E[Foot point inside zone + cooldown]
-    E --> F[Bounded incident queue]
-    F --> G[LangGraph: triage]
-    G --> H[Mock / LLM report]
-    H --> I[Finalize alert]
-    I --> J[In-memory alert store]
-    I --> K[Optional outgoing webhook]
-    L[FastAPI] --> B
-    L --> J
+    C --> D[Batch YOLO ONNX / CPU fallback]
+    D --> E[Bounded tracking + temporal rules]
+    E --> F[Candidate + timestamped evidence]
+    F --> G[Bounded queue: 16 events]
+    G --> H[LangGraph triage and report]
+    H --> I[Local template / Groq contact sheet / metadata LLM]
+    I --> J[Operator dashboard and optional webhook]
 ```
 
-Capture runs in a background thread. Inference runs off the API event loop. The
-frame buffer holds at most `batch_size` frames; the default of one prioritizes
-freshness. Batches are opportunistic: the pipeline does not wait to fill them.
-The incident queue holds 16 events and drops new events when full. A separate
-consumer runs LangGraph, so a slow LLM does not delay capture or detection.
+Capture runs in a background thread; inference runs off the API event loop.
+Batching is opportunistic, without waiting for a full batch. Simple nearest-point
+tracking uses class and distance gates, at most 100 tracks, and a 0.7-second expiry.
+It can switch identities under occlusion. Tracks reset at file loop boundaries.
+Media timestamps preserve motion timing even when processing drops frames.
+A separate consumer runs LangGraph so report latency does not block inference.
+The last 200 alerts, snapshots and evidence sequences are stored in memory and
+lost on restart. The incident queue drops new candidates when full.
 
-The zone is a normalized `[left, top, right, bottom]` rectangle. A person's bottom
-center must lie inside it. Events are limited by a stream-wide cooldown (default
-5 seconds), with 0.5 seconds of continuous zone occupancy required by default.
-Three or more people in one event trigger urgent operator review;
-otherwise the action is notification. LLM text does not change this policy.
-
-## Quick demo (manual)
-
-From the repository directory, create a virtual environment:
+## API examples
 
 ```bash
-python -m venv .venv
-# Linux/macOS
-source .venv/bin/activate
-# Windows PowerShell instead:
-# .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python -m src.demo --seconds 10
-```
-
-Expected console output includes `Detector backend=mock`, `FRAME ... objects=1`,
-`AGENT warning: Restricted-zone incident ...`, and a frame/alert summary. The
-rectangle enters the default zone after approximately 1.5 seconds. Counts and
-latency vary with machine speed. No video window is required.
-
-For a video or webcam:
-
-```bash
-python -m src.demo --source media/sample.mp4 --seconds 30
-python -m src.demo --source 0 --seconds 30
-```
-
-The CPU HOG detector only emits alerts when it actually detects an upright person
-inside the zone; arbitrary video is not guaranteed to produce detections.
-
-## HTTP server
-
-```bash
-python -m uvicorn src.main:app --host 127.0.0.1 --port 8000 --workers 1
-```
-
-Open [interactive API docs](http://localhost:8000/docs). Execute `POST /start-stream`
-with `{}` to start the synthetic demo, then fetch `GET /get-latest-alerts`.
-
-```bash
-curl -X POST http://localhost:8000/start-stream -H 'Content-Type: application/json' -d '{"source":"synthetic"}'
+curl -X POST http://localhost:8000/start-stream -H 'Content-Type: application/json' -d '{"source":"traffic"}'
 curl http://localhost:8000/get-latest-alerts
 curl -X POST http://localhost:8000/stop-stream
 ```
 
-PowerShell equivalents:
+PowerShell:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/start-stream -Method Post -ContentType application/json -Body '{"source":"synthetic"}'
+Invoke-RestMethod http://localhost:8000/start-stream -Method Post -ContentType application/json -Body '{"source":"traffic-reversed","loop":false}'
 Invoke-RestMethod http://localhost:8000/get-latest-alerts | ConvertTo-Json -Depth 10
 Invoke-RestMethod http://localhost:8000/stop-stream -Method Post
 ```
 
-| Endpoint | Behavior |
-| --- | --- |
-| `POST /start-stream` | Starts one stream; 409 if already active, 400 on capture failure |
-| `POST /stop-stream` | Stops capture/processing; queued reports may still finish |
-| `GET /get-latest-alerts?limit=20` | Newest alerts first, limit 1–200 |
-| `POST /webhooks/alerts` | Receives a validated Alert JSON; deduplicates by incident ID |
-| `GET /health` | Service health, stream state, backend, frame/event counters and error |
-| `GET /` | Visual operator dashboard |
-| `GET /frame.jpg` | Latest annotated JPEG, or 204 before the first processed frame |
-| `GET /alerts/{id}/snapshot.jpg` | Incident snapshot, or 404 if absent/expired |
-| `GET /demo-status` | Whether the real demo video, model and ONNX runtime are installed |
-
-Example real-source request:
+Example custom source (paths are local to the server):
 
 ```json
 {
   "source": "media/sample.mp4",
+  "scenario": "traffic",
   "backend": "auto",
-  "model_path": null,
-  "batch_size": 1,
-  "fps": 15,
-  "loop": true,
-  "zone": [0.35, 0.1, 0.8, 0.95],
-  "cooldown_seconds": 5
+  "fps": 25,
+  "loop": false,
+  "allowed_direction": "down",
+  "direction_zone": [0.1, 0.25, 0.45, 0.98],
+  "zone": [0.01, 0.7, 0.08, 0.98],
+  "dwell_seconds": 0.5
 }
 ```
 
-`source` also accepts webcam index `0` or an `rtsp://...` URL. File paths are local
-to the server. Files loop by default; `loop: false` stops at EOF. `fps` paces file
-and synthetic playback, independently of the file's original FPS. Live streams
-are continuously drained. RTSP open/read operations request five-second FFmpeg
-timeouts. A disconnected stream stops with an error in `/health`; restart it
-explicitly. Driver buffers and network latency are outside this application's control.
+`source` also accepts webcam index `0` or an RTSP URL. Traffic requires a working
+ONNX backend; startup rejects a person-only HOG fallback. Use `observe` to inspect
+an unfamiliar camera before configuring rules. File playback loops by default;
+`loop:false` stops at EOF. Live streams are continuously drained. RTSP requests
+five-second FFmpeg open/read timeouts; driver/network buffering remains external.
+A disconnect stops the stream with a health error; restart explicitly.
 
-## Docker Compose
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /start-stream` | Start one source; 409 if already active |
+| `POST /stop-stream` | Stop processing; queued reports can finish |
+| `GET /get-latest-alerts?limit=20` | Latest 1–200 alerts |
+| `POST /webhooks/alerts` | Receive validated alerts; deduplicate by incident ID |
+| `GET /health` | Backend, scenario, counters, errors and provider status |
+| `GET /frame.jpg` | Latest annotated frame, or 204 before processing |
+| `GET /alerts/{id}/snapshot.jpg` | Candidate snapshot |
+| `GET /alerts/{id}/evidence/{index}.jpg` | Timestamped evidence image, zero-based |
+| `GET /demo-status` | Asset readiness and preset configuration |
 
-```bash
-python -m src.assets
-docker compose up --build -d
-docker compose logs -f app
-```
+## Groq VLM
 
-Compose includes ONNX Runtime by default and mounts the assets downloaded on the
-host. Open `/` and click **Запустить**. If Python is unavailable on the host, prepare
-assets with `docker compose run --rm --user root -v ./media:/app/media -v ./models:/app/models app python -m src.assets`
-before starting the service (these one-off mounts permit the downloader to write).
-For a one-command finite
-console demo, run `docker compose run --rm app python -m src.demo --seconds 10`.
-Stop services with `docker compose down`.
-
-Place video files in `media/` and use `/app/media/sample.mp4` in requests. Model
-files go in `models/`. These directories are mounted read-only. For Linux USB
-cameras, add `devices: ["/dev/video0:/dev/video0"]` and configure device permissions;
-Docker Desktop camera passthrough is platform-dependent, so use a file or RTSP there.
-No database or broker is necessary for this bounded, single-process demo.
-
-## Optional YOLO / ONNX / TensorRT path
-
-```bash
-python -m pip install -r requirements-onnx.txt
-python -m src.demo --source media/sample.mp4 --model models/yolo.onnx --seconds 30
-```
-
-Supply your own **YOLOv8/YOLO11 COCO detection export**, float32 RGB NCHW input,
-raw output `[B, 84, N]`, **without embedded NMS**. Only person class 0 is retained.
-The adapter applies letterboxing, normalization, coordinate restoration and NMS.
-Dynamic batches are supported; fixed batches are padded and extra outputs ignored.
-Other export layouts (YOLOv5, end-to-end NMS, custom classes, FP16) are unsupported
-and cause a logged fallback to CPU HOG. Weights are downloaded only when you explicitly
-run the asset preparation command; they are not fetched during inference.
-
-`backend: "tensorrt"` requests ONNX Runtime TensorRT, then CUDA, then CPU providers
-when installed. It is an integration hook, not a bundled TensorRT engine. The
-optional `onnxruntime` dependency is CPU-only; GPU providers require a separately
-configured compatible runtime. Missing packages, bad weights, or inference errors
-fall back to HOG (synthetic startup falls back to mock). The active backend appears
-in health and every incident. PyTorch and CUDA are not required.
-
-For Docker, `INSTALL_ONNX=1` is the default; set it to `0` for a smaller mock/HOG-only
-image. Rebuild after changing it. Compose reads `.env`
-automatically. Manual Python launches also load the repository's `.env`; exported
-environment variables take precedence. Restart the server after changing settings.
-
-## Groq Vision: assess the incident image
-
-Create a local `.env` (excluded from Git and Docker build context):
+Create local `.env`, excluded from Git and Docker build context:
 
 ```dotenv
 LLM_MODE=groq
@@ -230,105 +148,103 @@ GROQ_API_KEY=your_key_here
 GROQ_MODEL=qwen/qwen3.8-27b
 ```
 
-Get your key from [Groq Console](https://console.groq.com/keys). The model is
-configurable; the default is listed in [Groq Vision documentation](https://console.groq.com/docs/vision).
-Restart Uvicorn (or recreate the Compose service), then start the real demo.
-Each eligible incident sends **one annotated JPEG from that exact event**, plus
-detection metadata, to `https://api.groq.com/openai/v1/chat/completions`.
-The video stream itself is not uploaded. This applies to the selected source,
-including your own camera when you choose one. Use `LLM_MODE=mock` for local-only reports.
+The model name is configurable; use a vision-capable model available to your account.
+Restart the service after changing settings. Groq receives one JPEG contact sheet
+containing up to three ordered, annotated incident frames and their metadata.
+The whole stream is not uploaded. This also applies to custom cameras selected by
+the operator. `LLM_MODE=mock` keeps reports local.
 
-The model returns a Russian report and a validated `vision_assessment` containing
-`verdict` (`confirmed`, `not_confirmed`, `uncertain`) and `explanation`. It is asked
-to assess visible people independently of the detector overlays. Its assessment
-is displayed separately from the detector policy; it does not dismiss alerts or
-trigger physical actions. `report_source=vlm` identifies a successful image assessment.
+A successful report has `report_source=vlm` and structured `vision_assessment`:
+`confirmed`, `not_confirmed` or `uncertain`. Provider failures retain local reports
+with explicit `fallback_reason`. Requests are limited to one per 70 seconds per
+process; HTTP errors pause requests for 60 seconds. Account quotas may still reject
+requests. There are no automatic retries. Other events retain local reports.
 
-To send exactly one public demo frame and verify the integration:
+Explicit live checks (consume API quota):
 
 ```bash
-python -m src.check_vlm
+python -m src.check_scenarios_vlm --presets traffic-reversed fight nonviolent
 ```
 
-This command makes a real API request. Normal `pytest` runs use mocked HTTP and
-never consume credits, even when your local `.env` contains a key.
+For metadata-only OpenAI-compatible/vLLM reporting set `LLM_MODE=openai`,
+`OPENAI_BASE_URL=http://localhost:8001/v1`, `OPENAI_API_KEY=local` and
+`LLM_MODEL=your-served-model`. This path sends no images. Set `ALERT_WEBHOOK_URL`
+for best-effort outgoing JSON delivery with a five-second timeout and no retries.
+Receiving webhooks does not trigger outgoing delivery.
 
-Groq image requests are limited to one per 20 seconds per process. Other events
-retain their local report with `fallback_reason=rate_limited_locally`. HTTP errors
-pause requests for 60 seconds; timeouts, missing images and malformed JSON also
-fall back without discarding the incident. No automatic HTTP retries are used.
-The dashboard reports configuration and the latest error without exposing the key.
-`report_provider`, `report_model`, `fallback_reason`, and `vision_assessment` are
-included in alert JSON. API usage is charged/limited according to your Groq account.
+## Docker Compose
 
-## LLM / vLLM and webhooks
-
-Default `LLM_MODE=mock` generates deterministic reports locally. To use an
-OpenAI-compatible Chat Completions endpoint, set:
-
-```text
-LLM_MODE=openai
-OPENAI_BASE_URL=http://localhost:8001/v1
-OPENAI_API_KEY=local
-LLM_MODEL=your-served-model-name
+```bash
+python -m src.assets --scenarios
+docker compose up --build -d
+docker compose logs -f app
 ```
 
-For OpenAI, use `https://api.openai.com/v1`, your key and a compatible model name.
-For a host vLLM server from Docker Desktop use `http://host.docker.internal:8001/v1`.
-This legacy `LLM_MODE=openai` path sends **detection metadata only**, not images.
-Use the separate `LLM_MODE=groq` path above for actual visual assessment.
-Timeouts and invalid responses produce `report_source: mock_fallback`.
+Open http://localhost:8000/. Compose includes CPU ONNX and mounts `media/` and
+`models/` read-only. Without host Python, download assets first with:
 
-Set `ALERT_WEBHOOK_URL` to deliver each generated Alert as JSON. Delivery is
-best-effort with a five-second timeout and no retries; failures retain the local
-alert. `/webhooks/alerts` can receive that same schema, visible in OpenAPI. Receiving
-does not trigger outbound delivery, so pointing it at this service does not recurse.
+```bash
+docker compose run --rm --user root -v ./media:/app/media -v ./models:/app/models app python -m src.assets --scenarios
+```
 
-## Tests and operational scope
+Custom file paths inside Docker start with `/app/media/`. Compose reads `.env`;
+manual Python also loads it, with exported variables taking precedence.
+Use `docker compose down` to stop. Camera passthrough depends on the platform;
+files and RTSP are easiest with Docker Desktop. No database or broker is required.
+
+## Detector backends and limitations
+
+The adapter supports float32 RGB NCHW YOLOv8/YOLO11 COCO raw output `[B,84,N]`,
+without embedded NMS. It performs letterboxing, class-aware NMS and coordinate
+restoration, retaining person, bicycle, car, motorcycle, bus and truck classes.
+Bicycles are displayed but excluded from the current motor-vehicle rules.
+Fixed batches are padded; dynamic batches are supported. Unsupported exports or
+runtime failures log a fallback to CPU HOG (person-only), or mock for synthetic
+startup. Actual backend is always visible. Traffic startup requires ONNX.
+`backend:tensorrt` requests ONNX Runtime TensorRT, then CUDA, then CPU providers;
+it is an integration hook, not a bundled engine. GPU providers require separate
+installation. PyTorch/CUDA are not required. Weights download only via `src.assets`.
+
+GStreamer requires an OpenCV build with GStreamer support. Set `gstreamer:true`
+and use e.g. `videotestsrc is-live=true ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false`.
+Standard pip wheels generally do not provide GStreamer.
+
+## Validation and training scope
 
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
+python -m src.evaluate_scenarios
 ```
 
-Tests exercise pixel-based mock detection, API validation, duplicate starts,
-end-to-end LangGraph alerts, webhook deduplication, restart, file EOF, fallback,
-dashboard JPEGs, incident snapshots and occupancy confirmation. When the real
-assets and ONNX Runtime are installed, an integration test also checks YOLO people
-detections and a LangGraph report from the real video; otherwise it is skipped.
-Tests also cover Groq image payloads, structured assessment parsing, throttling,
-HTTP errors and secret exclusion. GPU providers and cameras need separate testing;
-use `python -m src.check_vlm` for an explicit live Groq integration check.
+Tests mock external HTTP even with a local key. Offline evaluation writes
+`media/scenario-evaluation.json`; live checks write `media/temporal-vlm-evaluation.json`.
+Tests cover tracking direction, entry vs initial occupancy, crowds, policy, VLM
+payloads, fallback, API lifecycle, snapshots and real ONNX inference when installed.
 
-Use **one Uvicorn worker**: stream state and the last 200 alerts are process-local
-and disappear on restart. This is an unauthenticated local demo; Compose binds
-only to localhost. API source paths and webhook settings should be controlled by
-the operator. Reported latency starts after OpenCV decodes a frame and includes
-queue/inference time, not camera-to-server transport or LLM time. There is no
-hard real-time guarantee, tracking, persistence, automatic reconnect, or automated
-physical enforcement. Slow camera drivers may outlive the bounded shutdown join.
+A real action-training project additionally needs temporally labelled clips,
+representative street footage, permitted dataset use, camera-separated train/test
+splits, an action model and measured false positives per camera-hour. These small
+staged samples do not establish deployment accuracy.
 
-GStreamer template (requires a custom OpenCV build with GStreamer support; the
-default pip wheel generally lacks it): use `gstreamer: true` and a pipeline such as
-`videotestsrc is-live=true ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false`
-as `source`. RTSP pipelines can similarly use `rtspsrc ... ! ... ! appsink`.
-
-## Reference APIs
-
-- [LangGraph StateGraph](https://reference.langchain.com/python/langgraph/graph/state/StateGraph)
-- [ONNX Runtime Python API and execution providers](https://onnxruntime.ai/docs/api/python/api_summary.html)
+Use one Uvicorn worker. This unauthenticated service is intended for localhost.
+There is no persistent storage, guaranteed real-time response, automatic reconnect
+or physical enforcement. Measured latency starts after OpenCV decode and excludes
+camera transport and VLM time. Slow drivers may outlive the bounded shutdown join.
 
 ## Layout
 
 ```text
-src/stream_reader.py  Capture thread and synthetic frames
-src/detector.py       Mock, CPU HOG and YOLO ONNX adapter
-src/agent.py          LangGraph incident policy and reports
-src/main.py           FastAPI and pipeline lifecycle
-src/schemas.py        Validated request/event/alert models
-src/demo.py           Finite console demonstration
-src/assets.py         Checksum-verified real demo downloader
-src/preview.py        Annotated JPEG rendering
-src/static/           Dashboard HTML, CSS and JavaScript (no build step)
-tests/               Local integration tests
+src/stream_reader.py          Background capture and media timing
+src/detector.py               ONNX / HOG / mock inference
+src/events.py                 Tracking and temporal candidate rules
+src/agent.py                  LangGraph policy and external reports
+src/main.py                   FastAPI and pipeline lifecycle
+src/schemas.py                Validated requests, incidents and alerts
+src/assets.py                 Verified downloads and scenario presets
+src/preview.py                Overlays and timestamped contact sheets
+src/static/                   Dashboard without a build step
+src/demo.py                   Finite console demo
+src/evaluate_scenarios.py      Offline scenario evaluation
+src/check_scenarios_vlm.py     Explicit live Groq evaluation
 ```

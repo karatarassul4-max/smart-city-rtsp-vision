@@ -17,7 +17,7 @@ def test_dashboard_preview_and_snapshot():
         assert 'id="video"' in page.text
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/frame.jpg").status_code == 204
-        assert client.post("/start-stream", json={"source": "synthetic", "zone": [0, 0, 1, 1], "dwell_seconds": 0}).status_code == 200
+        assert client.post("/start-stream", json={"source": "synthetic", "scenario": "person_zone", "zone": [0, 0, 1, 1], "dwell_seconds": 0}).status_code == 200
         deadline = time.monotonic() + 8
         alerts = []
         while time.monotonic() < deadline:
@@ -41,7 +41,7 @@ def test_dashboard_preview_and_snapshot():
 
 def test_zone_confirmation_suppresses_brief_presence():
     with TestClient(app) as client:
-        client.post("/start-stream", json={"source": "synthetic", "zone": [0, 0, 1, 1], "dwell_seconds": 30})
+        client.post("/start-stream", json={"source": "synthetic", "scenario": "person_zone", "zone": [0, 0, 1, 1], "dwell_seconds": 30})
         time.sleep(0.3)
         assert client.get("/get-latest-alerts").json() == []
 
@@ -56,9 +56,9 @@ def test_real_video_yolo_and_agent():
     found = detector.detect_batch([frame])[0]
     assert detector.backend.startswith("onnx:")
     assert len(found) >= 2
-    assert all(d.label == "person" and d.confidence >= 0.4 for d in found)
+    assert sum(d.label == "person" and d.confidence >= 0.4 for d in found) >= 2
     with TestClient(app) as client:
-        response = client.post("/start-stream", json={"source": "demo"})
+        response = client.post("/start-stream", json={"source": "demo", "scenario": "person_zone"})
         assert response.status_code == 200
         assert response.json()["source_kind"] == "recording"
         assert response.json()["backend"].startswith("onnx:")

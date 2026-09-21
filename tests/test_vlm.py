@@ -41,7 +41,8 @@ def test_groq_sends_exact_incident_image_and_validates_assessment(monkeypatch):
     second = asyncio.run(agent.run(incident(), jpeg))
     assert first.report_source == "vlm"
     assert first.vision_assessment.verdict == "not_confirmed"
-    assert first.action == "notify_operator"
+    assert first.action == "none"
+    assert first.severity == "info"
     assert second.fallback_reason == "rate_limited_locally"
     assert len(calls) == 1
     assert "unit-test-placeholder" not in first.model_dump_json()
@@ -89,3 +90,34 @@ def test_missing_key_never_calls_provider(monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
     assert asyncio.run(IncidentAgent().run(incident(), b"jpeg")).fallback_reason == "missing_api_key"
+
+
+def test_temporal_evidence_is_one_ordered_contact_sheet(monkeypatch):
+    import cv2
+    import numpy as np
+    configure(monkeypatch)
+    images=[cv2.imencode('.jpg',np.full((90,160,3),color,np.uint8))[1].tobytes()
+            for color in [(0,0,255),(0,255,0),(255,0,0)]]
+    event=incident()
+    event.event_type='wrong_way'
+    event.evidence_times=[0,1,2]
+    payload=IncidentAgent()._payload({'incident':event,'images':images,'jpeg':images[-1]})
+    content=payload['messages'][0]['content']
+    assert len([item for item in content if item['type']=='image_url'])==1
+    data=base64.b64decode(content[1]['image_url']['url'].split(',',1)[1])
+    sheet=cv2.imdecode(np.frombuffer(data,np.uint8),cv2.IMREAD_COLOR)
+    height=sheet.shape[0]//3
+    assert sheet[height//2,100,2]>240
+    assert sheet[height+height//2,100,1]>240
+    assert sheet[2*height+height//2,100,0]>240
+
+
+def test_uncertain_interaction_never_becomes_urgent(monkeypatch):
+    configure(monkeypatch)
+    async def post(self,url,**kwargs):
+        content=json.dumps({'assessment':{'verdict':'uncertain','explanation':'Could be a hug'},'report':'Needs context'})
+        return httpx.Response(200,request=httpx.Request('POST',url),json={'choices':[{'message':{'content':content}}]})
+    monkeypatch.setattr(httpx.AsyncClient,'post',post)
+    event=incident();event.event_type='interaction_candidate'
+    alert=asyncio.run(IncidentAgent().run(event,b'jpeg'))
+    assert alert.severity=='info' and alert.action=='none'

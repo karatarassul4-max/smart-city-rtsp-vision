@@ -5,6 +5,17 @@
   font-size: 11px;
   line-height: 1.7;
 }
+.evidence-sequence {
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  font-size:10px;
+}
+.evidence-sequence a {
+  background:#eef5ef;
+  padding:6px;
+  border-radius:4px;
+}
 :root {
   --bg:#f4f5f0;
   --ink:#172b2b;
